@@ -9,7 +9,7 @@ pipeline {
 
     environment {
         // Change these to match your Docker Hub username and repo name
-        DOCKER_HUB_USER = 'YOUR_DOCKERHUB_USERNAME'
+        DOCKER_HUB_USER = 'jawad201'
         IMAGE_NAME      = 'task-manager'
         IMAGE_TAG       = "build-${env.BUILD_NUMBER}"
         COMPOSE_FILE    = 'docker-compose.jenkins.yml'
@@ -49,11 +49,11 @@ pipeline {
         stage('Deploy with Docker Compose') {
             steps {
                 echo "Tearing down any previous build containers..."
-                sh "docker-compose -f ${COMPOSE_FILE} down --remove-orphans || true"
+                sh "docker compose -f ${COMPOSE_FILE} down --remove-orphans || true"
 
                 echo "Launching containerized environment..."
                 // WORKSPACE is passed to docker-compose.jenkins.yml as an env var
-                sh "WORKSPACE=${env.WORKSPACE} docker-compose -f ${COMPOSE_FILE} up -d --build"
+                sh "WORKSPACE=${env.WORKSPACE} docker compose -f ${COMPOSE_FILE} up -d --build"
 
                 echo "Waiting for containers to stabilize..."
                 sh "sleep 15"
@@ -86,7 +86,7 @@ pipeline {
         }
         failure {
             echo "Pipeline failed. Cleaning up containers..."
-            sh "docker-compose -f ${COMPOSE_FILE} down --remove-orphans || true"
+            sh "docker compose -f ${COMPOSE_FILE} down --remove-orphans || true"
         }
         always {
             echo "Pipeline run finished. View logs at: http://<EC2_PUBLIC_IP>:8080/job/task-manager/"
