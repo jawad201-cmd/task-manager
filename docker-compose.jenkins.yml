@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────
+# docker-compose.jenkins.yml  —  Part II: Jenkins CI/CD Build
+# ─────────────────────────────────────────────────────────────
+# Key differences from Part I docker-compose.yml:
+#   1. No 'build' or pre-built image for the web service
+#      → Code is mounted as a bind volume from Jenkins workspace
+#   2. Different port numbers (8081 instead of 80)
+#   3. Different container names (jenkins_web / jenkins_db)
+# ─────────────────────────────────────────────────────────────
+# Usage (typically called by Jenkins, not manually):
+#   docker-compose -f docker-compose.jenkins.yml up -d
+#   docker-compose -f docker-compose.jenkins.yml down
+# ─────────────────────────────────────────────────────────────
+
+version: "3.8"
+
+services:
+
+  # ── Web Application — code mounted via volume ─────────────────
+  web:
+    image: node:18-alpine           # Base image only; no custom Dockerfile needed
+    container_name: jenkins_web
+    restart: unless-stopped
+    working_dir: /app
+    # Mount the Jenkins workspace directory as the app source
+    # Jenkins checks out the code to WORKSPACE; this bind-mounts it into the container
+    volumes:
+      - ${WORKSPACE}:/app           # Jenkins sets $WORKSPACE automatically
+    command: sh -c "npm install --omit=dev && node app.js"
+    ports:
+      - "8081:3000"                 # Different port from Part I (80) to avoid conflict
+    environment:
+      DB_HOST: jenkins_db
+      DB_USER: taskuser
+      DB_PASS: taskpass
+      DB_NAME: taskdb
+      PORT: 3000
+    depends_on:
+      jenkins_db:
+        condition: service_healthy
+    networks:
+      - jenkins_network
+
+  # ── MySQL Database ─────────────────────────────────────────────
+  jenkins_db:
+    image: mysql:8.0
+    container_name: jenkins_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: taskdb
+      MYSQL_USER: taskuser
+      MYSQL_PASSWORD: taskpass
+    volumes:
+      - jenkins_mysql_data:/var/lib/mysql   # Separate volume from Part I
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "taskuser", "-ptaskpass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - jenkins_network
+
+# ── Named Volumes ──────────────────────────────────────────────
+volumes:
+  jenkins_mysql_data:
+    driver: local
+
+# ── Networks ───────────────────────────────────────────────────
+networks:
+  jenkins_network:
+    driver: bridge

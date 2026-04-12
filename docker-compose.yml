@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────
+# docker-compose.yml  —  Part I: Containerized Web App Deployment
+# ─────────────────────────────────────────────────────────────
+# Usage:
+#   docker-compose up -d          # start in detached mode
+#   docker-compose down           # stop containers (data persists)
+#   docker-compose down -v        # stop + delete volumes (data lost)
+# ─────────────────────────────────────────────────────────────
+
+version: "3.8"
+
+services:
+
+  # ── Web Application (Node.js + Express) ──────────────────────
+  web:
+    image: jawad201/task-manager:latest   # <-- replace with your Docker Hub image
+    container_name: taskmanager_web
+    restart: unless-stopped
+    ports:
+      - "80:3000"       # Map host port 80 → container port 3000
+    environment:
+      DB_HOST: db
+      DB_USER: taskuser
+      DB_PASS: taskpass
+      DB_NAME: taskdb
+      PORT: 3000
+    depends_on:
+      db:
+        condition: service_healthy    # Wait until MySQL passes health check
+    networks:
+      - app_network
+
+  # ── MySQL Database ────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    container_name: taskmanager_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: taskdb
+      MYSQL_USER: taskuser
+      MYSQL_PASSWORD: taskpass
+    volumes:
+      # Named volume — data persists across container restarts and re-creations
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "taskuser", "-ptaskpass"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - app_network
+
+# ── Named Volumes ─────────────────────────────────────────────
+volumes:
+  mysql_data:
+    driver: local       # Stored at /var/lib/docker/volumes/mysql_data on the host
+
+# ── Networks ──────────────────────────────────────────────────
+networks:
+  app_network:
+    driver: bridge
