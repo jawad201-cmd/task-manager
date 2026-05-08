@@ -13,7 +13,7 @@ pipeline {
 
         TEST_IMAGE         = 'markhobson/maven-chrome:latest'
 
-        SMTP_FROM          = 'YOUR_GMAIL_ADDRESS@gmail.com'
+        SMTP_FROM          = 'jawadtaj201gmail.com'
     }
 
     triggers {
