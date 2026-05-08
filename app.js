@@ -5,12 +5,10 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// MySQL connection with retry logic
 const DB_CONFIG = {
   host: process.env.DB_HOST || 'db',
   user: process.env.DB_USER || 'taskuser',
@@ -22,120 +20,74 @@ const DB_CONFIG = {
 };
 
 let pool;
+function createPool() { pool = mysql.createPool(DB_CONFIG).promise(); }
 
-function createPool() {
-  pool = mysql.createPool(DB_CONFIG);
-  console.log('MySQL connection pool created.');
+async function waitForDB(retries = 15, delay = 3000) {
+  for (let i = 0; i < retries; i++) {
+    try { await pool.query('SELECT 1'); console.log('Connected to MySQL.'); return; }
+    catch (err) {
+      console.log(`MySQL not ready (attempt ${i + 1}/${retries})...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw new Error('MySQL did not become ready.');
 }
 
-function waitForDB(retries = 10, delay = 3000) {
-  return new Promise((resolve, reject) => {
-    const attempt = (remaining) => {
-      pool.query('SELECT 1', (err) => {
-        if (!err) {
-          console.log('Connected to MySQL.');
-          resolve();
-        } else if (remaining > 0) {
-          console.log(`MySQL not ready. Retrying in ${delay / 1000}s... (${remaining} attempts left)`);
-          setTimeout(() => attempt(remaining - 1), delay);
-        } else {
-          reject(new Error('Could not connect to MySQL after multiple attempts.'));
-        }
-      });
-    };
-    attempt(retries);
-  });
-}
-
-function initDB() {
-  const createTableSQL = `
+async function ensureSchema() {
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      title VARCHAR(255) NOT NULL,
-      description TEXT,
-      status ENUM('pending', 'done') DEFAULT 'pending',
+      text VARCHAR(500) NOT NULL,
+      done TINYINT(1) NOT NULL DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `;
-  pool.query(createTableSQL, (err) => {
-    if (err) {
-      console.error('Error creating table:', err.message);
-    } else {
-      console.log('Tasks table ready.');
-    }
-  });
+    ) ENGINE=InnoDB
+  `);
 }
 
-// Routes
-
-// GET all tasks (JSON API)
-app.get('/api/tasks', (req, res) => {
-  pool.query('SELECT * FROM tasks ORDER BY created_at DESC', (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(results);
-  });
+app.get('/health', async (req, res) => {
+  try { await pool.query('SELECT 1'); res.status(200).json({ status: 'ok' }); }
+  catch (e) { res.status(500).json({ status: 'error' }); }
 });
 
-// POST create a task
-app.post('/api/tasks', (req, res) => {
-  const { title, description } = req.body;
-  if (!title || title.trim() === '') {
-    return res.status(400).json({ error: 'Title is required.' });
-  }
-  pool.query(
-    'INSERT INTO tasks (title, description) VALUES (?, ?)',
-    [title.trim(), (description || '').trim()],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.status(201).json({ id: result.insertId, message: 'Task created.' });
-    }
-  );
+app.get('/api/tasks', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, text, done FROM tasks ORDER BY id DESC');
+    res.json(rows.map(r => ({ id: r.id, text: r.text, done: !!r.done })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// PATCH toggle task status
-app.patch('/api/tasks/:id/toggle', (req, res) => {
-  const { id } = req.params;
-  pool.query(
-    "UPDATE tasks SET status = IF(status='pending','done','pending') WHERE id = ?",
-    [id],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (result.affectedRows === 0) return res.status(404).json({ error: 'Task not found.' });
-      res.json({ message: 'Status toggled.' });
-    }
-  );
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const text = (req.body && req.body.text || '').toString().trim();
+    if (!text) return res.status(400).json({ error: 'text required' });
+    const [result] = await pool.query('INSERT INTO tasks (text, done) VALUES (?, 0)', [text]);
+    res.status(201).json({ id: result.insertId, text, done: false });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// DELETE a task
-app.delete('/api/tasks/:id', (req, res) => {
-  const { id } = req.params;
-  pool.query('DELETE FROM tasks WHERE id = ?', [id], (err, result) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Task not found.' });
-    res.json({ message: 'Task deleted.' });
-  });
+app.put('/api/tasks/:id/toggle', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query('UPDATE tasks SET done = 1 - done WHERE id = ?', [id]);
+    const [rows] = await pool.query('SELECT id, text, done FROM tasks WHERE id = ?', [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'not found' });
+    res.json({ id: rows[0].id, text: rows[0].text, done: !!rows[0].done });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
+app.delete('/api/tasks/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
+    res.status(204).send();
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Serve frontend
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+async function start() {
+  createPool();
+  await waitForDB();
+  await ensureSchema();
+  app.listen(PORT, () => console.log(`Task Manager listening on port ${PORT}`));
+}
 
-// Start server
-createPool();
-waitForDB()
-  .then(() => {
-    initDB();
-    app.listen(PORT, () => {
-      console.log(`Task Manager app running on port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error(err.message);
-    process.exit(1);
-  });
+start().catch(err => { console.error('Fatal startup:', err); process.exit(1); });
